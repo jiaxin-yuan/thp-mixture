@@ -1,15 +1,9 @@
 #!/bin/bash
 # Train and test THP_for_PPM on the 10 UQ4PPM datasets, one variant per call:
-#   ./run_thp.sh baseline_act [GPU]  THP-B: intensity MLE + regression time
-#                                    heads + a next activity head
-#   ./run_thp.sh mixture      [GPU]  THP-M: zero-inflated LogNormal mixture
-#                                    (K=5) + a next activity head
-#
-# Defaults: at most 300 epochs, early stopping at patience 24, gradient
-# clipping at GRAD_CLIP=1.0. Every setting below can be overridden by an
-# environment variable of the same name.
-set -uo pipefail
-
+#   ./run_thp.sh baseline_act [GPU]  THP-B
+#                                    
+#   ./run_thp.sh mixture      [GPU]  THP-M
+#            
 MODEL="${1:-}"                    # baseline_act | mixture, required
 GPU="${2:-0}"
 EPOCHS="${EPOCHS:-300}"
