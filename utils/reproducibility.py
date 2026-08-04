@@ -6,13 +6,7 @@ import torch
 
 
 def set_all_seeds(seed: int) -> torch.Generator:
-    """Seed ``random``, NumPy and PyTorch (CPU and all CUDA devices), and put
-    cuDNN in deterministic mode.
-
-    Returns a seeded :class:`torch.Generator` for DataLoaders and samplers.
-    Runs repeat exactly on the same hardware and library versions; results can
-    still differ across GPU models or PyTorch releases.
-    """
+    """Seed random, NumPy and torch, make cuDNN deterministic, return a seeded DataLoader generator."""
     os.environ["PYTHONHASHSEED"] = str(seed)
     random.seed(seed)
     np.random.seed(seed)

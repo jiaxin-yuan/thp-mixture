@@ -1,28 +1,20 @@
-"""BPM2025 / UQ4PPM metric quartet for probabilistic remaining-time prediction.
+"""BPM2025 / UQ4PPM metric quartet for probabilistic remaining time prediction.
 
-Faithful port of the evaluation in Amiri Elyasi, van der Aa & Stuckenschmidt,
-"A Simple and Calibrated Approach for Uncertainty-Aware Remaining Time
-Prediction" (BPM 2025) — github.com/keyvan-amiri/UQ4PPM,
-calibrated_regression.py:
+Port of Amiri Elyasi, van der Aa & Stuckenschmidt, "A Simple and Calibrated
+Approach for Uncertainty-Aware Remaining Time Prediction" (BPM 2025),
+github.com/keyvan-amiri/UQ4PPM, calibrated_regression.py:
 
-    MAE   mean |pred_mean - y|                                 (days, lower)
-    MA    uct.metrics_calibration.miscalibration_area(mu, sigma, y):
-          area between the calibration curve PICP(p) and the parity line,
-          with Gaussian central intervals mu +/- z((1+p)/2) sigma over a
-          uniform grid of expected proportions (100 bins). In [0, 0.5].
-    MPIW  the paper's "MPIW" column is uct.sharpness(sigma) =
-          sqrt(mean(sigma^2)) (RMS of the predictive stds, days, lower).
-    AURG  sparsification: sort by sigma descending, remove 1% at a time,
-          MAE of the retained set vs fraction removed ("UQ curve"); AURG =
-          trapz(random curve) - trapz(UQ curve), random removal with
-          np.random.seed(42). Higher is better; ~0 means uninformative
-          uncertainty; negative means misleading uncertainty.
+    MAE   mean |pred_mean - y| (days)
+    MA    miscalibration area: area between PICP(p) and the parity line over
+          Gaussian central intervals mu +/- z((1+p)/2) sigma, 100 bins, in [0, 0.5]
+    MPIW  the paper's column is uct.sharpness(sigma) = sqrt(mean(sigma^2)) (days)
+    AURG  sparsification gain: sort by sigma descending, drop 1% at a time, then
+          trapz(random curve) - trapz(UQ curve) with np.random.seed(42). Higher
+          is better, ~0 uninformative, negative misleading.
 
-All inputs are 1-D numpy arrays in days. We additionally provide a
-distribution-free MA computed from empirical sample quantiles (`ma_sample`)
-for models whose predictive law is given by Monte-Carlo samples rather than
-a Gaussian (mu, sigma) — the Gaussian MA is still reported for benchmark
-comparability.
+All inputs are 1-D numpy arrays in days. `ma_sample` adds a distribution-free MA
+from empirical sample quantiles, for predictive laws given by MC samples; the
+Gaussian MA is still reported for benchmark comparability.
 """
 
 import numpy as np
@@ -40,7 +32,7 @@ def miscalibration_area(pred_mean, pred_std, y_true, n_bins=100):
     """Gaussian-interval MA, replicating uncertainty_toolbox (interval type)."""
     exp_p = np.linspace(0.0, 1.0, n_bins)
     resid = (y_true - pred_mean) / np.clip(pred_std, 1e-12, None)
-    lower = norm.ppf(0.5 - exp_p / 2.0)            # [n_bins]
+    lower = norm.ppf(0.5 - exp_p / 2.0)
     upper = norm.ppf(0.5 + exp_p / 2.0)
     within = (resid[None, :] >= lower[:, None]) & (resid[None, :] <= upper[:, None])
     obs_p = within.mean(axis=1)
@@ -53,8 +45,7 @@ def sharpness_rms(pred_std):
 
 
 def aurg(pred_mean, y_true, pred_std, n_steps=100, seed=42):
-    """Area Under the Random Gain curve (UQ4PPM get_sparsification, verbatim
-    logic incl. the fixed random seed). Returns (ause, aurg)."""
+    """(ause, aurg) from UQ4PPM get_sparsification, fixed seed included."""
     pred_mean = np.asarray(pred_mean, dtype=float)
     y_true = np.asarray(y_true, dtype=float)
     pred_std = np.asarray(pred_std, dtype=float)
@@ -88,10 +79,7 @@ def aurg(pred_mean, y_true, pred_std, n_steps=100, seed=42):
 
 
 def ma_sample(rt_samples, y_true, p_grid=None):
-    """Distribution-free MA from per-instance MC samples.
-
-    rt_samples: [N, S] array; central p-intervals from empirical quantiles.
-    """
+    """Distribution-free MA from per-instance MC samples [N, S], the central p-intervals being empirical quantiles."""
     if p_grid is None:
         p_grid = np.linspace(0.05, 0.95, 19)
     qs_lo = np.quantile(rt_samples, (1 - p_grid) / 2, axis=1)     # [P, N]

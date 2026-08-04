@@ -1,18 +1,14 @@
 #!/usr/bin/env python
-"""Uncertainty-aware remaining-time prediction from THP-Mixture via MC rollout.
+"""Uncertainty-aware remaining time prediction from THP-Mixture by MC rollout.
 
-For every test prefix (case length L, prefix p in [1, L-1]) we draw S
-ancestral samples from the learned one-step law p(dt, k | H): at each step,
-sample dt from the zero-inflated LogNormal mixture and the next activity from
-the mark softmax, feed both back, and stop at the ORACLE remaining length
-K = L - p (THP has no EOS token; consistent with run_suffix_eval.py). The S
-suffix sums give an empirical p(RT | prefix), summarized as
-(pred_mean, pred_std) and scored with the BPM2025 / UQ4PPM metric quartet
-(MAE / MA / MPIW / AURG; see uq_metrics.py). A distribution-free MA from the
-empirical sample quantiles is reported alongside the Gaussian benchmark MA.
-
-This MC estimator is the principled replacement for greedy mean-path rollout
-(Jensen bias; docs/thp_suffix_feasibility.tex, Obstacle 3).
+For each test prefix (case length L, prefix p in [1, L-1]), S ancestral samples
+are drawn from the one-step law p(dt, k | H) — dt from the zero-inflated
+LogNormal mixture, the activity from the mark softmax, both fed back — stopping
+at the oracle remaining length K = L - p, as THP has no EOS token. The S suffix
+sums give an empirical p(RT | prefix), summarized as (pred_mean, pred_std) and
+scored with the UQ4PPM quartet of uq_metrics.py. Sampling replaces greedy mean
+path rollout, which is Jensen-biased. A distribution-free MA from the sample
+quantiles is reported next to the Gaussian benchmark MA.
 
 Usage (mpp env):
     conda run -n mpp python run_rt_uncertainty.py --dataset UQ_BPIC13I
@@ -42,11 +38,10 @@ import uq_metrics as um
 FOLD = 0
 N_MIX = 5
 SEED = 0
-MAX_ROWS = 32768         # instance*sample rows per AR chunk (seqs are short)
-MAX_SCORE_ELEMS = 2 ** 26  # cap rows*(p+maxK)^2: attention scores are
-                           # [rows, n_head, L, L]; long-case logs (Sepsis,
-                           # BPIC12) OOM under the flat MAX_ROWS cap
-LOG_DT_CLAMP = 20.0      # clamp on mu + sigma*z before exp (e^20 days, finite)
+MAX_ROWS = 32768           # instance*sample rows per AR chunk
+MAX_SCORE_ELEMS = 2 ** 26  # cap on rows*(p+maxK)^2; the flat row cap alone OOMs
+                           # on the long-case logs, attention being [R, H, L, L]
+LOG_DT_CLAMP = 20.0        # on mu + sigma*z before exp, to keep dt finite
 
 UQ_DATASETS = [
     "UQ_HelpDesk", "UQ_Sepsis", "UQ_BPIC13I", "UQ_BPIC20DD", "UQ_BPIC20RFP",
@@ -117,8 +112,7 @@ def run_dataset(ds, S):
 
     gen = torch.Generator(device=device); gen.manual_seed(SEED)
 
-    # Prefix instances grouped by prefix length (cf. run_suffix_eval.py)
-    groups = defaultdict(list)   # p -> list of (types[p], times[p], K, rt_true)
+    groups = defaultdict(list)   # p -> [(types[:p], times[:p], K, rt_true)]
     for ci in range(len(ed.time)):
         t = np.asarray(ed.time[ci], dtype=np.float64)
         a = np.asarray(ed.activity[ci], dtype=np.int64)
@@ -132,12 +126,12 @@ def run_dataset(ds, S):
     t0, done = _time.time(), 0
 
     means, stds, gts, plens, medians = [], [], [], [], []
-    q_lo, q_hi = [], []                      # 5% / 95% sample quantiles
-    sample_rows = []                          # for distribution-free MA
+    q_lo, q_hi = [], []                       # 5% / 95% sample quantiles
+    sample_rows = []                          # for the distribution-free MA
     with torch.no_grad():
         for p, items in sorted(groups.items()):
-            # Longest suffixes first so each chunk is sized for its own
-            # worst-case final length, not the group's.
+            # longest suffixes first, so a chunk is sized for its own worst
+            # case rather than the group's
             items = sorted(items, key=lambda x: -x[2])
             s0 = 0
             while s0 < len(items):
@@ -153,7 +147,7 @@ def run_dataset(ds, S):
                                         dtype=torch.long, device=device)
                 seq_time = torch.tensor(np.stack([x[1] for x in sub]),
                                         dtype=torch.float32, device=device)
-                # expand to S sample chains: [G*S, p]
+                # [G*S, p]: one row per sample chain
                 seq_type = seq_type.repeat_interleave(S, dim=0)
                 seq_time = seq_time.repeat_interleave(S, dim=0)
                 rt_acc = torch.zeros(G * S, device=device)

@@ -1,16 +1,16 @@
 #!/bin/bash
 # Train and test THP_for_PPM on the 10 UQ4PPM datasets, one variant per call:
-#   ./run_thp.sh baseline     [GPU]  intensity MLE, time heads only
-#   ./run_thp.sh baseline_act [GPU]  baseline plus a next activity head
-#   ./run_thp.sh mixture      [GPU]  zero-inflated LogNormal mixture (K=5)
-#                                    plus a next activity head
+#   ./run_thp.sh baseline_act [GPU]  THP-B: intensity MLE + regression time
+#                                    heads + a next activity head
+#   ./run_thp.sh mixture      [GPU]  THP-M: zero-inflated LogNormal mixture
+#                                    (K=5) + a next activity head
 #
 # Defaults: at most 300 epochs, early stopping at patience 24, gradient
 # clipping at GRAD_CLIP=1.0. Every setting below can be overridden by an
 # environment variable of the same name.
 set -uo pipefail
 
-MODEL="${1:-baseline}"            # baseline | baseline_act | mixture
+MODEL="${1:-}"                    # baseline_act | mixture, required
 GPU="${2:-0}"
 EPOCHS="${EPOCHS:-300}"
 PATIENCE="${PATIENCE:-24}"
@@ -18,8 +18,8 @@ BATCH_SIZE="${BATCH_SIZE:-32}"
 LR="${LR:-0.002}"
 N_MIX="${N_MIX:-5}"
 
-if [[ "$MODEL" != "baseline" && "$MODEL" != "baseline_act" && "$MODEL" != "mixture" ]]; then
-  echo "usage: $0 {baseline|baseline_act|mixture} [gpu]"; exit 2
+if [[ "$MODEL" != "baseline_act" && "$MODEL" != "mixture" ]]; then
+  echo "usage: $0 {baseline_act|mixture} [gpu]"; exit 2
 fi
 
 export CUDA_VISIBLE_DEVICES="$GPU"

@@ -22,7 +22,6 @@ def parse_args() -> argparse.Namespace:
                         help="<dir>/<stem>.csv, from which <dir>/{train,val,test}_"
                              "<stem>.csv are read")
 
-    # training hyper-parameters
     parser.add_argument("--batch_size", type=int,   default=32,   help="Batch size")
     parser.add_argument("--epoch",      type=int,   default=1,  help="Maximum number of epochs")
     parser.add_argument("--patience",   type=int,   default=0,
@@ -32,17 +31,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed",       type=int,   default=42,   help="Random seed")
     parser.add_argument("--n_mix",      type=int,   default=5,    help="LogNormal mixture components")
     parser.add_argument("--model_type", default="mixture",
-                        choices=["baseline", "baseline_act", "mixture"],
+                        choices=["baseline_act", "mixture"],
                         help="Head: 'mixture' = THP-M (LogNormal mixture + next "
                              "activity), 'baseline_act' = THP-B (intensity MLE "
-                             "time heads + next activity), 'baseline' = THP-B "
-                             "without the activity head")
+                             "time heads + next activity)")
 
-    # runtime
     parser.add_argument("--device",  default="cuda", help="'cuda' or 'cpu'")
     parser.add_argument("--log_dir", default="runs", help="TensorBoard log directory")
 
-    # mode flags
     parser.add_argument("--train", action="store_true", help="Run training loop")
     parser.add_argument("--test",  action="store_true", help="Run test evaluation")
     parser.add_argument("--model_path", default=None,
@@ -79,9 +75,7 @@ def resolve_device(requested: str) -> torch.device:
 
 
 def load_data(directory: str, fold_filename: str, batch_size: int):
-    """Load the three splits and return
-    ``(train_loader, val_loader, test_loader, num_types)``.
-    """
+    """Load the three splits as (train, val, test) loaders plus num_types."""
     print("Loading and preprocessing data ...")
     train_out, val_out, test_out = df_to_dict(
         directory=directory,
@@ -103,9 +97,7 @@ def load_data(directory: str, fold_filename: str, batch_size: int):
 
 def build_model(num_types: int, device: torch.device, n_mix: int = 5,
                 model_type: str = "mixture") -> Transformer:
-    """Instantiate the Transformer with the paper hyper-parameters and move it
-    to *device*.
-    """
+    """Instantiate the Transformer with the paper hyper-parameters."""
     model = Transformer(
         num_types=num_types,
         d_model=36,
@@ -136,10 +128,8 @@ def run_training(
     print("STARTING TRAINING")
     print("=" * 80)
 
-    # Baseline temporal heads regress z-scored Δt / remaining time, with stats
-    # taken from the train split; STANDARDIZE_TIME=0 falls back to raw days.
-    # The mixture head is unaffected (it works in log-space).
-    if model.model_type in ("baseline", "baseline_act") and os.environ.get("STANDARDIZE_TIME", "1") != "0":
+    # THP-B regresses z-scored targets; the mixture head works in log-space
+    if model.model_type == "baseline_act":
         device = next(model.parameters()).device
         model.time_stats = compute_baseline_time_stats(train_loader, device)
         print(f"  Time standardization (train z-score): {model.time_stats}")
@@ -180,12 +170,11 @@ def run_testing(
     output_file: str,
     args: argparse.Namespace,
 ) -> None:
-    """Evaluate the best-MAE checkpoint (or ``--model_path``) on the test split."""
+    """Evaluate the best-MAE checkpoint, or --model_path, on the test split."""
     print("\n" + "=" * 80)
     print("STARTING TESTING")
     print("=" * 80)
 
-    # resolve checkpoint path
     if args.model_path:
         ckpt_path = args.model_path
     else:
@@ -222,8 +211,6 @@ def run_testing(
 
 def main() -> None:
     """Parse arguments, load data, build the model, and train / test."""
-
-    # ---- setup ----
     args          = parse_args()
     set_all_seeds(args.seed)
 
@@ -236,22 +223,18 @@ def main() -> None:
 
     device = resolve_device(args.device)
 
-    # ---- data ----
     train_loader, val_loader, test_loader, num_types = load_data(
         directory, fold_filename, args.batch_size
     )
 
-    # ---- model ----
     model           = build_model(num_types, device, n_mix=args.n_mix,
                                      model_type=args.model_type)
     model_save_path = os.path.join("saved_models", f"{fold_filename}_{args.model_type}_best_model.pth")
 
-    # ---- train ----
     if args.train:
         run_training(model, train_loader, val_loader,
                      model_save_path, fold_filename, args)
 
-    # ---- test ----
     if args.test:
         run_testing(model, test_loader, model_save_path, output_file, args)
 

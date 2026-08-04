@@ -4,12 +4,9 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.utils.data
-from pathlib import Path
 from typing import Dict, List, Tuple
 
 from transformer.Constants import PAD
-
-# Raw CSV -> per-case event sequences for the DataLoaders.
 
 CASE_COL  = "CaseID"
 TIME_COL  = "Timestamp"
@@ -24,45 +21,25 @@ def load_dataframes(
     fold_filename: str,
     extension: str = ".csv",
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Read ``{train,val,test}_<fold_filename>.csv`` from *directory*.
-
-    Returns ``(train_df, val_df, test_df)`` with ``Timestamp`` already parsed
-    to ``datetime64``.
-    """
+    """Read the three ``{train,val,test}_<fold_filename>.csv`` splits."""
     def _read(name: str) -> pd.DataFrame:
-        path = os.path.join(directory, name + extension)
-        df = pd.read_csv(path)
+        df = pd.read_csv(os.path.join(directory, name + extension))
         df[TIME_COL] = pd.to_datetime(df[TIME_COL])
         return df
 
-    train_df     = _read(f"train_{fold_filename}")
-    val_df       = _read(f"val_{fold_filename}")
-    test_df      = _read(f"test_{fold_filename}")
-    return train_df, val_df, test_df
+    return (_read(f"train_{fold_filename}"),
+            _read(f"val_{fold_filename}"),
+            _read(f"test_{fold_filename}"))
 
 
 def build_event_type_map(train_df: pd.DataFrame) -> Tuple[Dict[str, int], int]:
-    """Map activity names to zero-based indices, in sorted order.
-
-    Built from the train split only, so no activity vocabulary leaks from
-    val/test. Returns ``(event_types, dim_process)``.
-    """
+    """Activity names to zero-based indices, from the train split only."""
     unique_acts = np.unique(train_df[ACT_COL])
-    event_types = {name: idx for idx, name in enumerate(unique_acts)}
-    return event_types, unique_acts.size
+    return {name: idx for idx, name in enumerate(unique_acts)}, unique_acts.size
 
 
 def add_time_features(df: pd.DataFrame, event_types: Dict[str, int]) -> pd.DataFrame:
-    """Add the time and activity features to *df* in-place.
-
-    New columns, all in days (float32) except the last:
-    ``time_since_start``, ``time_since_last_event``, ``remaining_time``,
-    ``type_event`` (integer activity code).
-
-    A ``CaseEndTime`` column, written by prefix extraction, defines the case
-    end for ``remaining_time``; without it the last event of the prefix is
-    used, which underestimates the remaining time on truncated prefixes.
-    """
+    """Add time_since_start, time_since_last_event, remaining_time (days) and type_event, the case end coming from CaseEndTime when present."""
     g = df.groupby(CASE_COL, sort=False)
 
     df["time_since_start"] = (
@@ -79,30 +56,18 @@ def add_time_features(df: pd.DataFrame, event_types: Dict[str, int]) -> pd.DataF
         .astype("float32")
     )
 
-    if "CaseEndTime" in df.columns:
-        case_end = pd.to_datetime(df["CaseEndTime"])
-        df[RT_COL] = (
-            (case_end - df[TIME_COL])
-            .dt.total_seconds()
-            .div(SECONDS_PER_DAY)
-            .astype("float32")
-        )
-    else:
-        df[RT_COL] = (
-            (g[TIME_COL].transform("max") - df[TIME_COL])
-            .dt.total_seconds()
-            .div(SECONDS_PER_DAY)
-            .astype("float32")
-        )
+    # Without CaseEndTime the prefix's last event stands in, which
+    # underestimates the remaining time on truncated prefixes.
+    end = (pd.to_datetime(df["CaseEndTime"]) if "CaseEndTime" in df.columns
+           else g[TIME_COL].transform("max"))
+    df[RT_COL] = ((end - df[TIME_COL]).dt.total_seconds()
+                  .div(SECONDS_PER_DAY).astype("float32"))
 
     act_codes = df[ACT_COL].map(event_types)
     n_unknown = act_codes.isna().sum()
     if n_unknown > 0:
         print(f"  [Warning] {n_unknown} events with unseen activity mapped to UNK")
-        # Dedicated UNK index (max_known + 1): keeps unseen activities clear of
-        # PAD=0 after the +1 shift applied in EventData.
-        unk_idx = len(event_types)
-        act_codes = act_codes.fillna(unk_idx)
+        act_codes = act_codes.fillna(len(event_types))    # UNK = max_known + 1
     df["type_event"] = act_codes.astype(int)
 
     return df
@@ -135,14 +100,8 @@ def df_to_dict(
     fold_filename: str,
     extension: str = ".csv",
 ) -> Tuple[dict, dict, dict]:
-    """CSV splits -> event sequences ready for the DataLoaders.
-
-    Each of ``(train_out, val_out, test_out)`` holds ``dim_process``,
-    ``max_length``, and its split data under ``"train"`` / ``"val"`` / ``"test"``.
-    """
-    train_df, val_df, test_df = load_dataframes(
-        directory, fold_filename, extension
-    )
+    """CSV splits to event sequences, each dict holding dim_process, max_length and its own split."""
+    train_df, val_df, test_df = load_dataframes(directory, fold_filename, extension)
     event_types, dim_process = build_event_type_map(train_df)
 
     max_len = 0
@@ -155,67 +114,53 @@ def df_to_dict(
         if case_max > max_len:
             max_len = case_max
     if has_unk:
-        dim_process += 1  # room for the UNK type in the embedding
-
-    train_seq = df_to_sequences(train_df)
-    val_seq   = df_to_sequences(val_df)
-    test_seq  = df_to_sequences(test_df)
+        dim_process += 1
 
     common = {"dim_process": dim_process, "max_length": max_len}
     return (
-        {**common, "train": train_seq},
-        {**common, "val":   val_seq},
-        {**common, "test":  test_seq},
+        {**common, "train": df_to_sequences(train_df)},
+        {**common, "val":   df_to_sequences(val_df)},
+        {**common, "test":  df_to_sequences(test_df)},
     )
 
 
-
 class EventData(torch.utils.data.Dataset):
-    """Dataset over the event sequences produced by :func:`df_to_sequences`."""
+    """Dataset over the event sequences produced by df_to_sequences."""
 
     def __init__(self, data: List[List[Dict]]) -> None:
         self.time     = [[e["time_since_start"]      for e in inst] for inst in data]
-        self.time_gap = [[e["time_since_last_event"]  for e in inst] for inst in data]
-        self.r_time   = [[e["remaining_time"]          for e in inst] for inst in data]
-        # Activity indices are 1-based inside the model (0 is reserved for PAD)
-        self.activity = [[e["type_event"] + 1          for e in inst] for inst in data]
+        self.time_gap = [[e["time_since_last_event"] for e in inst] for inst in data]
+        self.r_time   = [[e["remaining_time"]        for e in inst] for inst in data]
+        # 1-based inside the model, 0 is PAD
+        self.activity = [[e["type_event"] + 1        for e in inst] for inst in data]
         self.length   = len(data)
 
     def __len__(self) -> int:
         return self.length
 
     def __getitem__(self, idx: int):
-        return (
-            self.time[idx],
-            self.time_gap[idx],
-            self.r_time[idx],
-            self.activity[idx],
-        )
+        return (self.time[idx], self.time_gap[idx],
+                self.r_time[idx], self.activity[idx])
 
 
 def _pad_time(insts: List[List[float]]) -> torch.Tensor:
-    """Right-pad a list of float sequences to the maximum length in *insts*."""
+    """Right-pad float sequences to the batch maximum."""
     max_len = max(len(s) for s in insts)
-    batch   = np.array([s + [PAD] * (max_len - len(s)) for s in insts])
-    return torch.tensor(batch, dtype=torch.float32)
+    return torch.tensor(np.array([s + [PAD] * (max_len - len(s)) for s in insts]),
+                        dtype=torch.float32)
 
 
 def _pad_type(insts: List[List[int]]) -> torch.Tensor:
-    """Right-pad a list of integer sequences to the maximum length in *insts*."""
+    """Right-pad integer sequences to the batch maximum."""
     max_len = max(len(s) for s in insts)
-    batch   = np.array([s + [PAD] * (max_len - len(s)) for s in insts])
-    return torch.tensor(batch, dtype=torch.long)
+    return torch.tensor(np.array([s + [PAD] * (max_len - len(s)) for s in insts]),
+                        dtype=torch.long)
 
 
 def collate_fn(insts):
     """Pad the variable-length sequences of a batch."""
     time, time_gap, rt, activity = zip(*insts)
-    return (
-        _pad_time(time),
-        _pad_time(time_gap),
-        _pad_time(rt),
-        _pad_type(activity),
-    )
+    return _pad_time(time), _pad_time(time_gap), _pad_time(rt), _pad_type(activity)
 
 
 def get_dataloader(
@@ -225,9 +170,8 @@ def get_dataloader(
     num_workers: int = 2,
 ) -> torch.utils.data.DataLoader:
     """Wrap the event sequences in a padded DataLoader."""
-    dataset = EventData(data)
     return torch.utils.data.DataLoader(
-        dataset,
+        EventData(data),
         batch_size=batch_size,
         shuffle=shuffle,
         collate_fn=collate_fn,

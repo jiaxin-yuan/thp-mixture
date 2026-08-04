@@ -1,27 +1,24 @@
 """Prepare the UQ4PPM datasets for the THP_for_PPM pipeline.
 
-Strict temporal split, following the protocol of Weytjens'
-"predictive-process-monitoring-benchmarks" (create_benchmarks.py), so that no
-training case completes after a test case starts and the dataset end is not
-right-censoring biased.
+Strict temporal split following Weytjens' predictive-process-monitoring-benchmarks
+(create_benchmarks.py), so that no training case completes after a test case
+starts and the dataset end is not right-censoring biased.
 
-Six steps:
-  1. Drop duplicates, and optionally trim chronological outliers by date
-     (start_from_date / end_before_date, disabled unless START_MONTH /
-     END_MONTH are set).
+  1. Drop duplicates, optionally trim chronological outliers by date
+     (disabled unless START_MONTH / END_MONTH are set).
   2. Debias the dataset end: latest_start = max_ts - max_duration, keep only
-     cases starting on or before latest_start (limited_duration()).
+     cases starting on or before it.
   3. Test set = the last 20% of cases by start time, which defines T_sep.
   4. Train set = the cases completing before T_sep.
   5. Debias the test set start: for cases straddling T_sep, keep only prefixes
      whose prediction origin e_k lies in [T_sep, latest_start]. The model has
      no NaN-target mechanism, so such prefixes are dropped, not masked.
   6. Drop up to the 5% longest cases, at the duration cutoff maximizing the
-     training set size (choose_max_duration() sweeps percentiles 95..100).
+     training set size (percentiles 95..100).
 
-Prefix extraction: for a trace of length n, prefixes k = 2..n-1, each written
-with its target event (k+1 events) under CaseID "<id>_p{k}"; the CaseEndTime
-column carries the original trace end used for remaining time.
+For a trace of length n, prefixes k = 2..n-1 are written with their target
+event (k+1 events) under CaseID "<id>_p{k}"; CaseEndTime carries the original
+trace end used for remaining time.
 
 Writes to data/: {train,val,test,full_train}_fold0_variation0_{dataset}.csv
 """
@@ -50,7 +47,6 @@ DATASETS = {
     "Sepsis":    "UQ_Sepsis",
 }
 
-# --- protocol config ---------------------------------------------------------
 TEST_LEN        = 0.20          # last 20% of cases (by start time) -> test
 VAL_LEN         = 0.20          # last 20% of TRAIN cases (by start time) -> val
 MIN_TRACE_LEN   = 3             # need >=3 events: prefix(2) + target
@@ -58,10 +54,8 @@ STEP6_PCTL_LO   = 95.0          # step-6 sweep: drop up to top 5% longest cases
 STEP6_PCTL_HI   = 100.0
 STEP6_PCTL_STEP = 0.5
 MIN_TRAIN_CASES = 1             # collapse guard for the step-6 sweep
-MIN_TRAIN_FALLBACK = 50         # below this many train cases, the dataset is
-                                # retried without the step-2 end debias, which
-                                # otherwise empties back-loaded logs whose
-                                # arrivals concentrate in the final window
+MIN_TRAIN_FALLBACK = 50         # below this, retry without the step-2 end debias,
+                                # which otherwise empties back-loaded logs
 TIME_FMT        = "%Y/%m/%d %H:%M:%S.%f"
 
 # Step-1 date trim, disabled unless set to period strings such as "2012-01".
@@ -70,11 +64,7 @@ END_MONTH   = None
 
 
 def load_and_standardize(csv_name: str) -> pd.DataFrame:
-    """Load a raw CSV and standardize its column names and timestamps.
-
-    Returns long-form events with tz-aware UTC timestamps; all temporal
-    arithmetic runs on datetimes, strings are produced only at write time.
-    """
+    """Load a raw CSV into long-form events with standardized names and tz-aware UTC timestamps."""
     csv_path = INPUT_DIR / f"{csv_name}.csv"
     df = pd.read_csv(csv_path)
 
@@ -89,7 +79,7 @@ def load_and_standardize(csv_name: str) -> pd.DataFrame:
             col_map[col] = 'Activity'
     df = df.rename(columns=col_map)
 
-    # Keep only needed columns (handle duplicate Activity columns, e.g. HelpDesk)
+    # drop the duplicate Activity columns some logs carry (e.g. HelpDesk)
     df = df.loc[:, ~df.columns.duplicated()]
     df = df[['CaseID', 'Activity', 'Timestamp']].copy()
 
@@ -98,7 +88,6 @@ def load_and_standardize(csv_name: str) -> pd.DataFrame:
     return df
 
 
-# --- step 1: outliers + duplicates -------------------------------------------
 def start_from_date(df: pd.DataFrame, start_month) -> pd.DataFrame:
     """Drop cases whose start month is before *start_month* (a 'YYYY-MM' string)."""
     if start_month is None:
@@ -125,20 +114,13 @@ def apply_step1(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# --- steps 2 & 6: duration limit + end debias --------------------------------
 def limited_duration(df: pd.DataFrame, max_duration_days: float,
                      end_debias: bool = True):
-    """Step 6 (drop long cases), then step 2 (debias the dataset end).
-
-    Returns ``(df, latest_start)``, with latest_start derived from the
-    post-step-6 max timestamp, as in the reference implementation. With
-    ``end_debias=False`` step 2 is skipped and latest_start is the max
-    timestamp, so the test prefix gate imposes no upper cutoff.
-    """
+    """Step 6 then step 2; returns (df, latest_start), the max timestamp when end_debias is off."""
     span = df.groupby('CaseID')['Timestamp'].agg(['min', 'max'])
     dur_days = (span['max'] - span['min']).dt.total_seconds() / 86400.0
 
-    # Step 6: keep cases within the duration cutoff (epsilon as in the reference)
+    # epsilon as in the reference implementation
     keep_long = dur_days[dur_days <= max_duration_days * 1.00000000001].index
     df = df[df['CaseID'].isin(keep_long)].reset_index(drop=True)
 
@@ -146,7 +128,6 @@ def limited_duration(df: pd.DataFrame, max_duration_days: float,
     if not end_debias:
         return df, max_ts
 
-    # Step 2: debias dataset end
     latest_start = max_ts - pd.Timedelta(days=max_duration_days)
     starts = df.groupby('CaseID')['Timestamp'].min()
     keep_start = starts[starts <= latest_start].index
@@ -154,20 +135,14 @@ def limited_duration(df: pd.DataFrame, max_duration_days: float,
     return df, latest_start
 
 
-# --- step 3: separation time -------------------------------------------------
 def compute_Tsep(df: pd.DataFrame, test_len: float):
-    """T_sep = start time of the first test case, i.e. of the last `test_len`.
-
-    Returns a tz-aware Timestamp; sorting the Series keeps the UTC tz that
-    .values would strip.
-    """
+    """T_sep = start time of the first test case; sorting the Series keeps the UTC tz that .values would strip."""
     case_starts = df.groupby('CaseID')['Timestamp'].min().sort_values()
     n = len(case_starts)
     first_test_case_nr = int(n * (1 - test_len))
     return case_starts.iloc[first_test_case_nr]
 
 
-# --- step 4: strict train/test by completion vs T_sep ------------------------
 def strict_train_test_split(df: pd.DataFrame, T_sep):
     """train = cases with max_ts < T_sep; test = cases with max_ts >= T_sep."""
     case_max = df.groupby('CaseID')['Timestamp'].max()
@@ -195,18 +170,13 @@ def count_train_prefix_instances(df: pd.DataFrame, train_ids) -> int:
     return int((sizes - 2).clip(lower=0).sum())
 
 
-# --- step 6: choose the duration cutoff that maximizes the train set ---------
 def choose_max_duration(df1: pd.DataFrame, end_debias: bool = True) -> float:
-    """Pick the duration cutoff maximizing the number of training prefixes.
-
-    Sweeps the duration percentiles [95, 100]; ties go to the smallest cutoff,
-    which drops more long cases. Deterministic.
-    """
+    """Duration cutoff maximizing the training prefixes, swept over the percentiles [95, 100]."""
     span = df1.groupby('CaseID')['Timestamp'].agg(['min', 'max'])
     dur = (span['max'] - span['min']).dt.total_seconds() / 86400.0
 
     pctls = np.arange(STEP6_PCTL_LO, STEP6_PCTL_HI + 1e-9, STEP6_PCTL_STEP)
-    cands = sorted(set(np.percentile(dur.values, pctls)))  # ascending durations
+    cands = sorted(set(np.percentile(dur.values, pctls)))
 
     best_key = None
     best_md = None
@@ -223,18 +193,9 @@ def choose_max_duration(df1: pd.DataFrame, end_debias: bool = True) -> float:
     return best_md
 
 
-# --- prefix extraction -------------------------------------------------------
 def extract_prefixes(df: pd.DataFrame, gate: str = None,
                      T_sep=None, latest_start=None) -> pd.DataFrame:
-    """Extract the prefixes k = 2..n-1 of each trace, with their target event.
-
-    Prefix k of a trace [e1, ..., en] is [e1, ..., e_k, e_{k+1}], so the
-    prediction origin is e_k and the target is e_{k+1}.
-
-    With ``gate='test'`` a prefix is kept only if e_k falls in
-    [T_sep, latest_start], which applies steps 5 and 2 per prefix; train and
-    val pass gate=None.
-    """
+    """Prefixes k = 2..n-1 as [e1, ..., e_k, e_{k+1}]; gate='test' keeps only those whose origin e_k lies in [T_sep, latest_start] (steps 5 and 2)."""
     rows = []
     for case_id, grp in df.groupby('CaseID', sort=False):
         events = grp.reset_index(drop=True)
@@ -242,12 +203,12 @@ def extract_prefixes(df: pd.DataFrame, gate: str = None,
         if n < MIN_TRACE_LEN:
             continue
         case_end_time = events['Timestamp'].iloc[-1]
-        for k in range(2, n):  # k = 2, 3, ..., n-1
+        for k in range(2, n):
             if gate == 'test':
-                origin_ts = events['Timestamp'].iloc[k - 1]  # e_k (last context event)
+                origin_ts = events['Timestamp'].iloc[k - 1]  # e_k, last context event
                 if origin_ts < T_sep or origin_ts > latest_start:
                     continue
-            prefix_events = events.iloc[:k + 1].copy()  # k+1 events
+            prefix_events = events.iloc[:k + 1].copy()       # k+1 events
             prefix_events['CaseID'] = f"{case_id}_p{k}"
             prefix_events['CaseEndTime'] = case_end_time
             rows.append(prefix_events)
@@ -263,21 +224,16 @@ def extract_prefixes(df: pd.DataFrame, gate: str = None,
 
 def _split_once(df1: pd.DataFrame, end_debias: bool):
     """Run steps 6, 2, 3, 4 and the val carve for one end_debias mode."""
-    md = choose_max_duration(df1, end_debias=end_debias)        # step 6 (sweep)
-    df2, latest_start = limited_duration(df1, md, end_debias=end_debias)  # 6 (+2)
-    T_sep = compute_Tsep(df2, TEST_LEN)                         # step 3
-    train_ids, test_ids = strict_train_test_split(df2, T_sep)   # step 4
+    md = choose_max_duration(df1, end_debias=end_debias)
+    df2, latest_start = limited_duration(df1, md, end_debias=end_debias)
+    T_sep = compute_Tsep(df2, TEST_LEN)
+    train_ids, test_ids = strict_train_test_split(df2, T_sep)
     train_cases, val_cases = carve_val(df2, train_ids, VAL_LEN)
     return df2, latest_start, T_sep, train_cases, val_cases, test_ids, md
 
 
 def dataset_stats(df: pd.DataFrame, out_name: str, stage: str) -> dict:
-    """Log statistics at one preprocessing stage, over whole traces.
-
-    Table 1 of the paper reports the *raw* stage, i.e. the log as published:
-    step 1 then removes the fully duplicated events (712 over the ten logs),
-    and steps 6 and 2 drop further cases before the split.
-    """
+    """Whole-trace statistics at one preprocessing stage; Table 1 reports the raw stage, i.e. the log as published."""
     g = df.groupby('CaseID')['Timestamp']
     lengths = g.size()
     span = g.agg(['min', 'max'])
@@ -301,14 +257,12 @@ def prepare_dataset(csv_name: str, out_name: str, stats_only: bool = False):
     df0 = load_and_standardize(csv_name)
     n_cases0 = df0['CaseID'].nunique()
 
-    df1 = apply_step1(df0)                                      # step 1
+    df1 = apply_step1(df0)
 
     end_debias = True
     df2, latest_start, T_sep, train_cases, val_cases, test_ids, md = \
         _split_once(df1, end_debias=True)
 
-    # Fallback for back-loaded logs, whose training cohort the step-2 end
-    # debias collapses.
     if len(train_cases) < MIN_TRAIN_FALLBACK:
         print(f"  [Warning] {out_name}: strict split left only {len(train_cases)} "
               f"train cases, retrying without the step-2 end debias")
@@ -329,7 +283,7 @@ def prepare_dataset(csv_name: str, out_name: str, stats_only: bool = False):
     train_df = extract_prefixes(df2[df2['CaseID'].isin(train_cases)])
     val_df = extract_prefixes(df2[df2['CaseID'].isin(val_cases)])
     test_df = extract_prefixes(df2[df2['CaseID'].isin(test_ids)],
-                               gate='test', T_sep=T_sep, latest_start=latest_start)  # step 5
+                               gate='test', T_sep=T_sep, latest_start=latest_start)
     full_train_df = pd.concat([train_df, val_df], ignore_index=True)
 
     if len(test_df) == 0:

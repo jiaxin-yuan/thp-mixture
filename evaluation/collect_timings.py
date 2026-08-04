@@ -9,9 +9,9 @@ Sources:
                     was unavailable it is estimated as epochs times the mean
                     min/epoch over the datasets that do have one
 
-The epoch budgets differ (THP stops at 300 epochs / patience 24, SuTraN and
-ED-LSTM at 200), so the total conflates per-epoch cost with convergence length;
-min/epoch is the hardware-comparable column. The report states this.
+The epoch budgets differ (THP 300 epochs / patience 24, the baselines 200), so
+the total conflates per-epoch cost with convergence length; min/epoch is the
+hardware-comparable column, as the report states.
 """
 import os, re, sys, csv, glob, statistics
 
@@ -28,21 +28,13 @@ DATASETS = ["UQ_HelpDesk","UQ_Sepsis","UQ_BPIC13I","UQ_BPIC20DD","UQ_BPIC20RFP",
 T_RE = re.compile(r"Train .*?t=([0-9.]+)min")
 
 def thp_time(kind, ds):
-    """Epochs and wall-clock minutes of one run, from its training log."""
-    if kind == "mixture":
-        cands = [f"logs_mixture_v2_{ds}.log"]
-    elif kind == "hawkes":
-        # Classical Hawkes MLE fit, one pass covering the uni and marked variants
-        cands = [f"logs_hawkes_v2_{ds}.log"]
-    else:
-        cands = [f"logs_baseline_act_v2_{ds}.log"]
-    for c in cands:
-        p = os.path.join(THP, c)
-        if os.path.exists(p):
-            with open(p, errors="ignore") as fh:
-                ts = [float(m) for m in T_RE.findall(fh.read())]
-            if ts:
-                return len(ts), round(sum(ts), 3), c
+    """Epochs and wall-clock minutes from one run's log, *kind* being its infix: baseline_act, mixture, or hawkes."""
+    p = os.path.join(THP, f"logs_{kind}_v2_{ds}.log")
+    if os.path.exists(p):
+        with open(p, errors="ignore") as fh:
+            ts = [float(m) for m in T_RE.findall(fh.read())]
+        if ts:
+            return len(ts), round(sum(ts), 3), os.path.basename(p)
     return None, None, None
 
 def load_sutran_csv():
@@ -61,7 +53,7 @@ def f(x):
 
 def main():
     sc = load_sutran_csv()
-    # mean min/epoch per sutran model from real ckpt spans (for estimating pruned)
+    # mean min/epoch from the real ckpt spans, to estimate the pruned runs
     rates = {}
     for m in ("SUTRAN_NDA_results","ED_LSTM_results"):
         vals=[]
@@ -71,7 +63,7 @@ def main():
                 if w and e and e>0: vals.append(w/e)
         rates[m]=statistics.mean(vals) if vals else None
 
-    MODELS=[("THP-baseline","thp","baseline"),("THP-mixture","thp","mixture"),
+    MODELS=[("THP-baseline","thp","baseline_act"),("THP-mixture","thp","mixture"),
             ("SuTraN","sut","SUTRAN_NDA_results"),("ED-LSTM","sut","ED_LSTM_results"),
             ("Hawkes","thp","hawkes")]
     table={}  # ds -> model -> (epochs, wall, src)
@@ -91,9 +83,8 @@ def main():
                     w=round(ep*rates[key],2); src="EST(ep*rate)"
                 table[ds][name]=(ep,w,src)
 
-    # The shipped CSV holds the paper's measurements. Without the training logs
-    # this run would have nothing to put in the THP columns, so refuse rather
-    # than overwrite them; rerun run_thp.sh first, or pass --force.
+    # without training logs the THP columns would be blank, so keep the shipped
+    # measurements rather than overwrite them
     have_thp = any(table[ds][n][1] is not None
                    for ds in DATASETS for n in ("THP-baseline", "THP-mixture"))
     os.makedirs(OUTDIR, exist_ok=True)
