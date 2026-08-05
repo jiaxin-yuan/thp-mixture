@@ -233,7 +233,7 @@ def _split_once(df1: pd.DataFrame, end_debias: bool):
 
 
 def dataset_stats(df: pd.DataFrame, out_name: str, stage: str) -> dict:
-    """Whole-trace statistics at one preprocessing stage; Table 1 reports the raw stage, i.e. the log as published."""
+    """Whole-trace statistics at one stage of the pipeline; the raw stage reproduces Table 1."""
     g = df.groupby('CaseID')['Timestamp']
     lengths = g.size()
     span = g.agg(['min', 'max'])
@@ -313,8 +313,8 @@ def prepare_dataset(csv_name: str, out_name: str, stats_only: bool = False):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--stats", action="store_true",
-                    help="only report the Table 1 statistics of the retained "
-                         "cases, writing paper_results/dataset_stats.csv")
+                    help="only report per-log statistics at the raw, dedup and "
+                         "retained stages, writing paper_results/dataset_stats.csv")
     args = ap.parse_args()
 
     if not args.stats:
