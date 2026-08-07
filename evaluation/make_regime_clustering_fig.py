@@ -21,6 +21,12 @@ from sklearn.metrics import silhouette_score
 DAY = 86400.0
 # name, median dt (s), #Act, hand label; Table 1, recomputed by
 # `python prepare_uq4ppm.py --stats`
+#
+# #Act counts distinct concept:name. UQ4PPM and the LA-CR paper count
+# concept:name x lifecycle:transition, i.e. BPIC12 36 and BPIC13I 13 instead of
+# 24 and 4; the other eight logs have a constant lifecycle. Substituting those
+# two leaves the k=2 partition and the k=3 blocks below unchanged, and moves the
+# silhouette at k=2 to 0.436 (excl. outlier) and 0.608 (all ten).
 logs = [
     ("HelpDesk",   3.28*DAY,  14,  "B"),
     ("Sepsis",     6.5*60,    16,  "A"),

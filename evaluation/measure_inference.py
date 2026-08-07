@@ -10,12 +10,13 @@ GPU-synchronized, after one warm-up pass:
                    full autoregressive suffix decode whose step-0 yields the
                    next event, these models having no cheaper mode
 
-Appends dataset,model,wall_s,n_prefixes,ms_per_prefix to
-paper_results/inference_timings.csv.
+Writes dataset,model,wall_s,n_prefixes,ms_per_prefix to
+paper_results/inference_timings.csv, one row per (dataset, model), replaced on
+rerun.
 
 Usage:
     python measure_inference.py --thp
-    SUTRAN_DIR=<checkout> python measure_inference.py --baselines
+    SUTRAN_DIR=/path/to/SuffixTransformerNetwork python measure_inference.py --baselines
 """
 
 import os
@@ -98,14 +99,23 @@ def best_checkpoint(backup_path):
     return max(ckpts, key=lambda p: int(p.split("_")[-1].split(".")[0])) if ckpts else None
 
 
-def append_row(dataset, model, wall_s, n_prefixes):
-    new = not os.path.exists(OUT_CSV)
-    with open(OUT_CSV, "a", newline="") as f:
+HEADER = ["dataset", "model", "wall_s", "n_prefixes", "ms_per_prefix"]
+
+
+def write_row(dataset, model, wall_s, n_prefixes):
+    """Replace this (dataset, model)'s row, leaving every other row in place, so
+    a rerun updates its own timings instead of duplicating them."""
+    row = [dataset, model, f"{wall_s:.3f}", n_prefixes,
+           f"{1000.0 * wall_s / max(n_prefixes, 1):.4f}"]
+    rows = []
+    if os.path.exists(OUT_CSV):
+        with open(OUT_CSV, newline="") as f:
+            rows = [r for r in csv.reader(f) if r and r != HEADER]
+    rows = [r for r in rows if r[:2] != [dataset, model]] + [row]
+    with open(OUT_CSV, "w", newline="") as f:
         w = csv.writer(f)
-        if new:
-            w.writerow(["dataset", "model", "wall_s", "n_prefixes", "ms_per_prefix"])
-        w.writerow([dataset, model, f"{wall_s:.3f}", n_prefixes,
-                    f"{1000.0 * wall_s / max(n_prefixes, 1):.4f}"])
+        w.writerow(HEADER)
+        w.writerows(rows)
     print(f"  {dataset} {model}: {wall_s:.2f}s over {n_prefixes} prefixes "
           f"({1000.0 * wall_s / max(n_prefixes, 1):.3f} ms/prefix)", flush=True)
 
@@ -159,7 +169,7 @@ def bench_thp():
                     model(event_type, event_time)
                 _sync(device)
                 wall = time.perf_counter() - t0
-            append_row(ds, tag, wall, n_prefixes)
+            write_row(ds, tag, wall, n_prefixes)
     os.chdir(cwd)
 
 
@@ -224,7 +234,7 @@ def bench_baselines():
                 wall = time.perf_counter() - t0
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
-            append_row(ds, name, wall, n_prefixes)
+            write_row(ds, name, wall, n_prefixes)
 
 
 if __name__ == "__main__":

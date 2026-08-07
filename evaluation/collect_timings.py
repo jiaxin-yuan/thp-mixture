@@ -4,6 +4,8 @@
 Sources:
   THP-B / THP-M     logs_{baseline_act,mixture}_v2_UQ_<DS>.log, written by
                     run_thp.sh, summed over the per-epoch `Train ... t=<x>min`
+  Hawkes            logs_hawkes_v2_UQ_<DS>.log, the same format, written by
+                    hawkes_baseline.py under evaluation/
   SuTraN / ED-LSTM  paper_results/baselines/timings_sutran.csv, wall time from
                     the checkpoint mtime span of their own runs; where that span
                     was unavailable it is estimated as epochs times the mean
@@ -29,12 +31,14 @@ T_RE = re.compile(r"Train .*?t=([0-9.]+)min")
 
 def thp_time(kind, ds):
     """Epochs and wall-clock minutes from one run's log, *kind* being its infix: baseline_act, mixture, or hawkes."""
-    p = os.path.join(THP, f"logs_{kind}_v2_{ds}.log")
-    if os.path.exists(p):
-        with open(p, errors="ignore") as fh:
-            ts = [float(m) for m in T_RE.findall(fh.read())]
-        if ts:
-            return len(ts), round(sum(ts), 3), os.path.basename(p)
+    # run_thp.sh logs land in the repo root, hawkes_baseline.py's under evaluation/
+    for d in (THP, SCRIPT_DIR):
+        p = os.path.join(d, f"logs_{kind}_v2_{ds}.log")
+        if os.path.exists(p):
+            with open(p, errors="ignore") as fh:
+                ts = [float(m) for m in T_RE.findall(fh.read())]
+            if ts:
+                return len(ts), round(sum(ts), 3), os.path.basename(p)
     return None, None, None
 
 def load_sutran_csv():

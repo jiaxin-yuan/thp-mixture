@@ -1,14 +1,13 @@
 # THP-Mixture
 
-**Work in Progress:** This repository is currently being cleaned up and documented to accompany the submission of our paper. The complete and reproducible code will be finalized soon.
 
 Reference implementation of "THP-Mixture: Generative, Uncertainty-Aware
 Predictive Process Monitoring with Temporal Point Processes". This file covers running the code. All times in days.
 
-| `--model_type` | Paper |
-|----------------|-------|
-| `mixture`      | THP-M | 
-| `baseline_act` | THP-B |
+| `--model_type` | Paper | Time head |
+|----------------|-------|-----------|
+| `mixture`      | THP-M (Mixture)  | zero-inflated LogNormal mixture |
+| `baseline_act` | THP-B (Baseline) | point regression |
 
 `baseline_act` is the code name of THP-B in the checkpoints and the artifacts.
 
@@ -35,21 +34,20 @@ python prepare_uq4ppm.py            # strict temporal split, prefix extraction
 python prepare_uq4ppm.py --stats    # per-log statistics
 ```
 
-Writes `data/{train,val,test,full_train}_fold0_variation0_UQ_<name>.csv`, each
-case expanded into prefixes `<id>_p<k>`, `CaseEndTime` carrying the remaining
-time target.
+Writes `data/{train,val,test,full_train}_fold0_variation0_<ds>.csv`, where `<ds>`
+is `UQ_` plus the input name, such as `UQ_HelpDesk`. Each case is expanded into
+prefixes `<id>_p<k>`, `CaseEndTime` carrying the remaining time target.
 
-`--stats` writes no splits. It prints one table per stage and writes
-`paper_results/dataset_stats.csv`, columns `dataset, stage, cases, events, act,
-avg_len, med_dt_s, tie_pct, avg_dur_d`: `raw` reproduces Table 1, `dedup` is
-after duplicate removal, `retained` after case-duration trimming and
-end-of-dataset debiasing, the cases the models train on.
+`--stats` reports only, leaving those CSVs unwritten. It prints one table per
+stage — `raw`, the log as loaded; `dedup`, after duplicate removal; `retained`,
+after case-duration trimming and end-of-dataset debiasing, the cases the models
+train on — and writes the same rows to `paper_results/dataset_stats.csv`, columns
+`dataset, stage, cases, events, act, avg_len, med_dt_s, tie_pct, avg_dur_d`.
 
-The vocabulary is built from the train split alone, so activities first seen in
-val or test map to one shared UNK type. Six logs need it: BPIC15-1 by far the
-most (train sees 259 of 361 activities, 91 more appear in test), HelpDesk
-(`DUPLICATE`, `Require upgrade`), and BPIC13I, BPIC20ID, BPIC20RFP, BPIC20TPD
-with one or two each. BPIC12, BPIC20DD, BPIC20PTC and Sepsis have none.
+The CSVs keep the original activity names. The vocabulary is built from the train
+split alone, so activities first seen in val or test share one UNK id at load
+time — 91 of BPIC15-1's 361 activities, one or two in BPIC13I, BPIC20ID,
+BPIC20RFP, BPIC20TPD and HelpDesk, none in the rest.
 
 ## Train
 
@@ -60,28 +58,66 @@ with one or two each. BPIC12, BPIC20DD, BPIC20PTC and Sepsis have none.
 
 Both variants are needed. `run_thp.sh` applies the paper's settings (at most 300
 epochs, patience 24, batch 32, lr 0.002, K = 5, gradient clipping 1.0, seed 42)
-and writes three outputs, all gitignored:
+and writes three outputs per log, none of them committed, so a fresh clone has
+none until you train:
 
-- `saved_models/<fold>_<variant>_best_model_best_{mae,mae_rt,ll}.pth`, one
-  checkpoint per validation metric. The evaluation scripts and `main.py --test`
-  load the `_best_mae` one; the other two are kept but unused.
-- `logs_<variant>_v2_<log>.log` in the repo root, which Table 5 reads for
+- `saved_models/fold0_variation0_<ds>_<variant>_best_model_best_{mae,mae_rt,ll}.pth`,
+  one checkpoint per validation metric. The evaluation scripts and
+  `main.py --test` load the `_best_mae` one; the other two are kept but unused.
+- `logs_<variant>_v2_<ds>.log` in the repo root, which Table 5 reads for
   training cost.
-- `results/fold0_variation0_<log>_<variant>.txt`, the testline of Table 4,
-  copied to `results_<variant>_v2/` as each log finishes.
+- `results/fold0_variation0_<ds>_<variant>.txt`, one
+  `TEST ll=... mae=... mae_rt=... acc=...` line, also copied to
+  `results_<variant>_v2/`. Of these, only `baseline_act`'s `mae_rt` feeds a
+  table, as the THP-B column of Table 4.
+
+Pretrained checkpoints are not distributed. The CSVs and JSONs under
+`paper_results/` are the record of the original runs; reproducing Tables 3 to 5
+means training both variants first.
 
 ## Reproduce the paper
 
-One subsection per table. `<ds>` is a dataset name such as `UQ_BPIC20TPD`, and
-`per_dataset/` abbreviates `paper_results/per_dataset/<ds>/`. Table 2 and
+One subsection per table. `per_dataset/` abbreviates
+`paper_results/per_dataset/<ds>/`. Table 2 and
 Figures 1 to 3 need no code.
+
+Every printed cell of Tables 1, 3, 4 and 5 is recorded in
+`paper_results/paper_tables.csv`, one `table, dataset, column, value` row each,
+under the keys `datasets`, `nextevent`, `rtuq` and `timing` — the reference for
+what a rerun should reproduce. No script in the repo writes it; it was
+assembled by hand from the artifacts below.
+
+The SuTraN and ED-LSTM columns are not retrained here. The commands below read
+them from a local clone of https://github.com/BrechtWts/SuffixTransformerNetwork,
+whose location is passed in the environment variable `SUTRAN_DIR`:
+
+```bash
+export SUTRAN_DIR=/path/to/SuffixTransformerNetwork
+```
+
 
 ### Table 1 — dataset statistics
 
-`python prepare_uq4ppm.py --stats` writes `dataset_stats.csv`, of which the
-table quotes the `stage=raw` rows; `dedup` and `retained` record the two
-trimming steps. `python evaluation/make_regime_clustering_fig.py` runs the Ward
-clustering on (Act, Med. Δt) behind the Group A / Group B / outlier blocks.
+`python prepare_uq4ppm.py --stats` writes `dataset_stats.csv`; the table quotes
+its `stage=raw` rows, the logs as loaded — see the mismatch noted below.
+`python evaluation/make_regime_clustering_fig.py` runs the Ward clustering on the
+cluster-defining statistics (Act, Med. Δt) behind the Group A, Group B and
+Outlier blocks.
+
+Act counts distinct `concept:name`. UQ4PPM and the LA-CR paper [1] count
+`concept:name` × `lifecycle:transition`, which differs on the two logs whose
+lifecycle attribute varies:
+
+| Log | `concept:name` | with `lifecycle:transition` |
+|-----|---------------------------|-----------------------------|
+| BPIC12  | 24 | 36 |
+| BPIC13I | 4  | 13 |
+
+The other eight logs carry one lifecycle value, so both conventions agree there,
+and the models are trained on the `concept:name` vocabulary. Substituting 36
+and 13 leaves the Ward k = 2 partition and the k = 3 blocks unchanged, moving
+only the silhouette (0.529 to 0.436 excluding the outlier, 0.580 to 0.608 over
+all ten).
 
 ### Table 3 — next event predictions
 
@@ -89,25 +125,26 @@ clustering on (Act, Med. Δt) behind the Group A / Group B / outlier blocks.
 |---------|---------|----------|
 | THP-B, THP-M | `python evaluation/run_evaluation_uq.py --thp --all` | `per_dataset/thp_results.json` |
 | H-uni, H-mk | `python evaluation/hawkes_baseline.py --all` | `per_dataset/hawkes_results.json` |
-| SuTraN, ED-LSTM | `SUTRAN_DIR=<checkout> python evaluation/run_evaluation_uq.py --ppm --all` | `per_dataset/ppm_results.json` |
+| SuTraN, ED-LSTM | `python evaluation/run_evaluation_uq.py --ppm --all` | `per_dataset/ppm_results.json` |
 
-Each JSON gives `activity_accuracy_teacher` and `time_mae_teacher`. H-uni models
-no activity, hence the dash.
+| Paper metric | `thp_results.json`, `hawkes_results.json` | `ppm_results.json` |
+|--------------|-------------------------------------------|--------------------|
+| Next activity accuracy (%) | `activity_accuracy_teacher` under `methods` | `act_accuracy` |
+| Next event time MAE (days) | `time_mae_teacher` under `methods` | `time_mae_days` |
+
+H-uni models inter-event times without marks, so its
+`activity_accuracy_teacher` is a placeholder 0.0, printed as the "–" of the
+table.
 
 ### Table 4 — remaining time prediction
 
 | Columns | Command | Artifact |
 |---------|---------|----------|
-| THP-M RT-MAE, MA, MPIW, AURG | `python evaluation/run_rt_uncertainty.py --all --samples 50` | `per_dataset/rt_uncertainty_results.json` |
-| THP-B RT-MAE | `./run_thp.sh baseline_act 0`, the `--test` line | `results/fold0_variation0_<ds>_baseline_act.txt` |
-| SuTraN, ED-LSTM RT-MAE | `SUTRAN_DIR=<checkout> python evaluation/run_evaluation_uq.py --ppm --all` | `per_dataset/ppm_results.json` |
-| LA-CR⋆ | not vendored, shipped as measured | `baselines/lacr_summary.csv`, columns `lacr_*` |
-| UQ⋆ | published values, no code | `uq4ppm_rt_mae_reference.csv` |
-
-The four THP-M columns are `mae`, `ma`, `mpiw_rms_sigma` and `aurg`, all from
-the same S = 50 rollouts. `lacr_*` is the per-metric better of LA+I and LA+S,
-the ⋆ of the caption. The THP-B column is `mae_rt`, shipped for all ten logs in
-`thp_baseline_testline.csv`.
+| THP-M RT-MAE, MA, MPIW, AURG | `python evaluation/run_rt_uncertainty.py --all --samples 50` | `per_dataset/rt_uncertainty_results.json`, `mae`, `ma`, `mpiw_rms_sigma` and `aurg` under `models` |
+| THP-B RT-MAE | `python main.py --fold_dataset data/fold0_variation0_<ds>.csv --test --model_type baseline_act` | `thp_baseline_testline.csv`, column `mae_rt` |
+| SuTraN, ED-LSTM RT-MAE | `python evaluation/run_evaluation_uq.py --ppm --all` | `per_dataset/ppm_results.json` |
+| LA-CR⋆ | LA-CR's own implementation [1], retrained under our strict temporal split, run outside this repo | `baselines/lacr_summary.csv`, columns `lacr_*`, the ⋆ over its `LA+I_*` and `LA+S_*`; the THP-M side of that file is `thp_full_*` |
+| UQ⋆ | quoted from Table 3 of [1], under that paper's own split; not rerun | — |
 
 ### Table 5 — training and inference cost
 
@@ -115,36 +152,31 @@ the ⋆ of the caption. The THP-B column is `mae_rt`, shipped for all ten logs i
 |---------|---------|----------|
 | training minutes | `python evaluation/collect_timings.py` | `time_consumption_comparison.csv` |
 | inference, THP-B and THP-M | `python evaluation/measure_inference.py --thp` | `inference_timings.csv` |
-| inference, SuTraN and ED-LSTM | `SUTRAN_DIR=<checkout> python evaluation/measure_inference.py --baselines` | `inference_timings.csv`, appended |
-| inference, LA-CR | not vendored, shipped as measured | `baselines/lacr_inference_timing.csv` |
+| inference, SuTraN and ED-LSTM | `python evaluation/measure_inference.py --baselines` | `inference_timings.csv` |
+| inference, LA-CR | timed with LA-CR's own implementation [1], run outside this repo | `baselines/lacr_inference_timing.csv` |
 
-`collect_timings.py` sums the `t=<x>min` lines of `logs_*_v2_<ds>.log` in the
-repo root and reads SuTraN and ED-LSTM from `baselines/timings_sutran.csv`.
-`hawkes_baseline.py` writes its logs under `evaluation/`, so copy them up first
-or the Hawkes column comes out empty:
+## Open points
 
-```bash
-cp evaluation/logs_hawkes_v2_*.log .
-python evaluation/collect_timings.py
-```
+Three details behind the printed numbers, recorded so each cell can be traced,
+and open to tightening in a later revision.
 
-The MC rollout of Section 4.2 is excluded from the table.
+**Decode of the Table 3 time column.** THP-M's next event time is decoded as the
+median of the predictive distribution, the MAE-optimal point prediction and the
+default `--decode median`, rather than the expectation of Equation 7. Both are
+shipped for all ten logs: the expectation is `mae` in `thp_mixture_testline.csv`,
+5.56 d on BPIC20TPD against the printed 5.15 d. Equation 8 appears there as
+`mae_rt`; Table 4 reports instead the S = 50 rollout sample mean of Section 4.2,
+22.56 d against 28.21 d.
 
-## Estimators
+**Provenance of the Table 5 training times.** THP-B, THP-M and Hawkes are summed
+from their training logs. SuTraN and ED-LSTM are derived — checkpoint mtime span
+on eight logs, epochs × mean rate on two — and LA-CR's figure comes from its own
+run; the `*_src` columns of `time_consumption_comparison.csv` record which applies
+per cell. Re-timing the three baselines would put the whole table on one footing.
 
-- Next event time (THP-M): the median of the predictive density, the MAE-optimal
-  point estimate, from the default `--decode median`.
-- Remaining time (THP-M): the mean of the S = 50 rollouts, the same samples that
-  give MA, MPIW and AURG.
-- The closed-form E[Δt] of Equation 7 and its teacher-forced accumulation of
-  Equation 8 are what `main.py --test` prints; both are shipped for all ten logs
-  in `paper_results/thp_mixture_testline.csv`, alongside
-  `thp_baseline_testline.csv` for THP-B, whose remaining time comes from its
-  regression head.
-- Of the two testlines only THP-B feeds a table. THP-M is reported from the
-  median decode (Table 3) and the rollout mean (Table 4), not from the closed
-  form: on BPIC20TPD, 5.15 d and 22.56 d against the testline's 5.56 d and
-  28.21 d.
+**Stage quoted in Table 1.** The printed rows are `stage=raw` in
+`dataset_stats.csv`, the logs as loaded; the `stage=retained` rows, 8.2% fewer
+cases and 14.5% fewer events, are the ones the models train on.
 
 ## Layout
 
@@ -153,6 +185,7 @@ main.py              train / test one log
 run_thp.sh           one variant over all 10 logs
 prepare_uq4ppm.py    strict temporal split, prefixes, statistics
 Utils.py             log-likelihood, mixture NLL, E[Δt], CE
+environment.yml      the pinned conda environment
 preprocess/          CSV loading, Dataset and DataLoader
 transformer/         THP backbone and prediction heads
 trainer/             epochs, checkpointing, early stopping
@@ -160,4 +193,10 @@ utils/               seeding
 evaluation/          next event, remaining time, uncertainty, cost
 paper_results/       the numbers behind the paper
 ```
+
+## References
+
+[1] Amiri Elyasi, K., van der Aa, H., Stuckenschmidt, H.: A simple and
+calibrated approach for uncertainty-aware remaining time prediction. In: BPM,
+pp. 217–234. Springer (2025). Code: https://github.com/keyvan-amiri/UQ4PPM
 

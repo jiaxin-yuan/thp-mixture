@@ -9,8 +9,7 @@ the next gap MAE of Table 3.
   SuTraN / ED-LSTM  decoupled PPM, step-0 of the suffix prediction
 
 All methods share the chronological 80/20 split and prefixes [2, n-1], scored
-per position under teacher forcing. The remaining time reference is Table 3 MAE
-(days) of the BPM2025 UQ4PPM paper (Amiri Elyasi, van der Aa, Stuckenschmidt).
+per position under teacher-forcing.
 
 Usage (--thp needs the `mpp` env; --ppm needs `fasutran`; --report either),
 with --all in place of --dataset to sweep every log:
@@ -40,22 +39,6 @@ UQ_DATASETS = [
     "UQ_BPIC20RFP", "UQ_BPIC20PTC", "UQ_BPIC20ID", "UQ_BPIC20TPD",
     "UQ_BPIC12", "UQ_BPIC15_1",
 ]
-
-# Remaining time MAE (days) of the eight methods of Amiri Elyasi et al.
-# (BPM2025, Table 3) under their own split; the only copy in this repository.
-PAPER_RT_TABLE = {
-    "UQ_Sepsis":     {"DA+H": 16.35, "CDA+H": 18.08, "HR": 15.32, "DE": 15.44, "BE+H": 15.69, "CARD":  24.50, "LA+I": 15.73, "LA+S": 15.73},
-    "UQ_BPIC13I":    {"DA+H":  3.67, "CDA+H":  4.19, "HR":  3.15, "DE":  3.36, "BE+H":  3.06, "CARD":   4.69, "LA+I":  5.53, "LA+S":  5.53},
-    "UQ_BPIC12":     {"DA+H":  6.60, "CDA+H":  8.02, "HR":  5.86, "DE":  6.05, "BE+H":  5.95, "CARD":   7.03, "LA+I":  7.84, "LA+S":  7.84},
-    "UQ_HelpDesk":   {"DA+H": 11.28, "CDA+H": 10.09, "HR":  9.45, "DE": 11.18, "BE+H": 18.65, "CARD":  12.87, "LA+I":  9.45, "LA+S":  9.45},
-    "UQ_BPIC20DD":   {"DA+H":  5.38, "CDA+H":  6.32, "HR":  4.13, "DE":  5.92, "BE+H":  4.70, "CARD":   4.50, "LA+I":  4.12, "LA+S":  4.12},
-    "UQ_BPIC20RFP":  {"DA+H":  5.09, "CDA+H":  6.30, "HR":  5.59, "DE":  7.35, "BE+H":  6.62, "CARD":   5.71, "LA+I":  5.19, "LA+S":  5.19},
-    "UQ_BPIC20PTC":  {"DA+H":  9.45, "CDA+H": 12.83, "HR":  8.36, "DE": 11.08, "BE+H": 10.45, "CARD":  11.86, "LA+I":  7.73, "LA+S":  7.73},
-    "UQ_BPIC20ID":   {"DA+H": 14.62, "CDA+H": 17.09, "HR": 15.40, "DE": 17.26, "BE+H": 14.08, "CARD":  22.26, "LA+I": 21.72, "LA+S": 21.72},
-    "UQ_BPIC20TPD":  {"DA+H": 25.02, "CDA+H": 25.98, "HR": 26.01, "DE": 27.12, "BE+H": 27.80, "CARD":  30.37, "LA+I": 27.79, "LA+S": 27.79},
-    "UQ_BPIC15_1":   {"DA+H": 30.29, "CDA+H": 32.23, "HR": 26.93, "DE": 24.71, "BE+H": 27.23, "CARD": 100.43, "LA+I": 25.28, "LA+S": 25.28},
-}
-
 
 def out_dir(ds):
     d = os.path.join(PER_DATASET, ds)
@@ -327,7 +310,7 @@ def _load(ds):
 
 
 def generate_report(ds):
-    """Print and store the per-method table, with the UQ4PPM reference."""
+    """Print and store the per-method table."""
     thp, ppm = _load(ds)
     if not thp and not ppm:
         print(f"  [{ds}] no results yet"); return
@@ -343,19 +326,12 @@ def generate_report(ds):
     for n, r in ppm.items():
         lines.append(f"{n:<20} {'PPM':<10} "
                      f"{r['act_accuracy']:>9.1f} {r['time_mae_days']:>8.3f} {r['n_instances']:>8}")
-    if ds in PAPER_RT_TABLE:
-        tbl = PAPER_RT_TABLE[ds]
-        best_m = min(tbl, key=tbl.get)
-        lines.append(f"\nRemaining-time SOTA reference (BPM2025 UQ4PPM paper, MAE days):")
-        lines.append("  " + "  ".join(f"{k}={v}" for k, v in tbl.items()))
-        lines.append(f"  best = {best_m} ({tbl[best_m]:.2f} d)   "
-                     f"[NB: paper MAE = remaining-time -> compare vs THP mae_rt, not next-event MAE]")
     report = "\n".join(lines)
     with open(os.path.join(out_dir(ds), "report.txt"), "w") as f:
         f.write(report)
     print(report)
 
-    unified = {"thp": thp, "ppm": ppm, "paper_rt_sota": PAPER_RT_TABLE.get(ds)}
+    unified = {"thp": thp, "ppm": ppm}
     with open(os.path.join(out_dir(ds), "unified_results.json"), "w") as f:
         json.dump(unified, f, indent=2, default=_np_enc)
 
